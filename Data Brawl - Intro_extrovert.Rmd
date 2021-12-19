@@ -1,0 +1,818 @@
+---
+title: "Data Brawl"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library("jtools")
+library(dplyr)
+library(tidyverse)
+library(naniar)
+library(lattice)
+library(finalfit)
+library("ComplexHeatmap")
+library(ggplot2)
+library(reshape2)
+library(boot)
+library(table1)
+library(knitr)
+library(xtable)
+library(ggdist)
+library(gghalves)
+library(cowplot)
+library(qqman)
+library(forestplot)
+library(patchwork)
+options(scipen=0) 
+```
+
+```{r setup2, include=FALSE}
+setwd('/Users/nel/Desktop/Nel/Programming stuff/Data_viz/Data/Introverted_extroverted')
+inex<-read.csv("data.csv",sep = "\t")
+
+inex_1 <- inex %>% na_if(0) %>% filter(age<100) %>%mutate(
+  IE = case_when((IE==1 ) ~ "intro",
+                 (IE==2 ) ~ "extro",
+                 (IE==3 ) ~ "neither"),
+ engnat = case_when((engnat==1 ) ~ "Yes",
+                 (engnat==2 ) ~ "No"),
+  gender = case_when((gender==1 ) ~ "male",
+                 (gender==2 ) ~ "female",
+                 (gender==3 ) ~ "other"),
+ country = case_when((country!="AU" & country!="GB" & country!="DE" & country!="CA" & country!="ID" & country!="US")~"Other",
+                     (country=="AU")~"AU",
+                      (country=="US")~"US",
+                      (country=="ID")~"ID",
+                      (country=="CA")~"CA",
+                      (country=="DE")~"DE",
+                      (country=="GB")~"GB",),
+ country=as.factor(country),
+ IE= as.factor(IE),
+  engnat=as.factor(engnat),
+  gender=as.factor(gender),
+) %>% drop_na()
+
+relevant_info <-  inex_1 %>% select(gender,age,engnat,IE,country,testelapse)
+
+response_columns<- cbind(inex_1 %>% select(grep("A", names(inex_1)) & grep("Q", names(inex_1))),relevant_info)
+
+time_columns<- cbind(inex_1 %>% select(grep("E", names(inex_1)) & grep("Q", names(inex_1))),relevant_info)
+
+position_cols<- cbind(inex_1 %>% select(grep("I", names(inex_1)) & grep("Q", names(inex_1))),relevant_info)
+
+```
+
+# The personality predictor
+
+In this project we will investigate the data set of people answering a questionnaire about their personality type, whether they are introverts or extroverts. 
+
+## Introduction: understanding the data
+
+### Table 1: Data description
+To understand what we have in hand, an initial analysis of the data set is needed. To accomplish that a table 1 is presented with summaries of the dataset and their main categorical data. Firstly, note that in order to accomplish this some of the data has had to be cleaned, therefore those who had unreasonable values for the datatype have been cleared (eg age of 250), as well as some individuals who refused to answer some of the main questions about themselves. As the dataset is so large, dropping these 147 observations doesn't represent a big loss for the study, only a mere 2% decrease in sample size.
+
+```{r, echo=FALSE}
+inex_tb1<-cbind(inex_1[(279:282)] ,inex_1[274])
+
+inex_tb1$country <- 
+  factor(inex_tb1$country, levels=c("AU","CA","DE","GB","ID","Other","US"),
+         labels=c("Austria", 
+                  "Canada",
+                  "Germany",
+                  "Great Britain",
+                  "Indonesia",
+                  "Other",
+                  "United States"))
+
+names(inex_tb1) <-c("Gender","Native in English","Age", "Intro/Extrovert","Country")
+
+table1(~Gender+Country+Age+`Native in English`|`Intro/Extrovert`,data=inex_tb1)
+```
+
+Above the general description of the data is clear in that between extroverted people and introverted people, there are no great shifts in response rate, other than that of gender, where it can be identified that females tend to identify more as extroverted relative to men. Other than that all the other categorical variables seem pretty evenly split between categories, including the group which doesn't identify as either extrovert or introvert.
+
+### Responses of the survey:
+
+Turning now to the survey data, some of the data of the questionnaires shows interesting patterns worth looking into. For instance, the relationship of the time spent in each question and the order of the questionnaire is quite important, as it may be depicting errors, or people who lost engagement throughout. Also, the relationship in the pattern of answering is relevant as well, such as whether people tend to answer more in binary packages such as (1-5) or more of a gradient, using the values 2-3-4 rather than the extremes.
+
+Time patterns:
+
+In order to understand time patterns, filtrate all the responses in which look unreasonable, for instance if people spent more than 5 minutes in a question they will be filtered away as that will not be representative for this particular study. Furthermore, in the calculation of the regression in how the order of the questions it's important to also take into account the extra time that non-english speakers spend in each question when answering.
+
+```{r, echo=FALSE}
+id<-as.data.frame(matrix(c(1:length(response_columns[,1])),ncol=1,nrow=length(response_columns[,1])))
+
+answers_disordered<-cbind(id,response_columns)
+answers_timings<-cbind(id,time_columns)
+answers_positions<-cbind(id,position_cols)
+
+position_outliers_5<-sort(match(sort(as.integer((as.matrix(answers_timings)[,2:92])),decreasing=TRUE)[1:405],as.integer((as.matrix(answers_timings)[,2:92]))))
+
+times<-as.integer((as.matrix(answers_timings)[,2:92]))[-position_outliers_5]/(1000)
+positions<-as.integer((as.matrix(answers_positions)[,2:92]))[-position_outliers_5]
+english_native<-rep(as.factor(as.matrix(answers_positions)[,95]),91)[-position_outliers_5]
+
+lm_5<-lm(times~positions+english_native)
+
+lm_5 %>%
+summary() %>%
+xtable() %>%
+kable()
+```
+
+In this case, the results display that on average people spent 5 seconds in each question, but progressively lost interest and answered faster and faster, with response time falling 9 milliseconds at each extra question. Furthermore, if the individual was a native English speaker, the response time was 0.7 seconds faster per question. This results signal don't show any preoccupying features, as for the last question people will take on average 4.5 seconds, around 15% less than at the start of the survey.
+
+
+Now looking into the answering patters of individuals, whether people answer all the same or people display different "styles" of answering. Below is a box-plot displaying how many of each score (1-5) was used by each individual person. Clearly the extremes, numbers 1 and 5, were the favorite choices, with people choosing to score 4 on the questions as a close second. Also, the distributions look nicely shapped normally, so there aren't any further issues that should be investigated.
+
+```{r, echo=FALSE, fig.dim = c(6, 4)}
+counts_answers<-as.data.frame(matrix(NA,length(response_columns[,1]),11))
+names(counts_answers)<-c("Answered 1","Answered 2","Answered 3","Answered 4","Answered 5","id","1&5","2&3&4","i_e_o","gender","english_native")
+
+for (zz in 1:5){
+  counts_answers[,zz] <- rowSums(response_columns[1:91] == zz)
+}
+
+counts_answers[,6]<-c(1:length(response_columns[,1]))
+counts_answers[,9]<-response_columns[,95]
+counts_answers[,10]<-response_columns[,92]
+counts_answers[,11]<-response_columns[,94]
+counts_answers_melted<-melt(counts_answers[1:6] ,  id.vars = 'id', variable.name = 'response')
+
+ggplot(counts_answers_melted[-round(position_outliers_5/91,0),], aes(x = response, y = value,col=response)) + 
+ ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA
+  ) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    range_scale = .4, 
+    ## add some transparency
+    alpha = .01
+  ) +ylab("Number of times a person answered")+
+  coord_cartesian(xlim = c(1.2, NA), clip = "off")
+```
+
+Now moving more closely onto the trade-offs made by people, it's interesting to investigate whether there is a response style where people choose "gradient" answers and a different group which chooses only "extremes". In order to look into this, plot the counts for each score and investigate relationships.
+
+```{r,  echo=FALSE, ,warning=FALSE,include=FALSE,fig.keep='all'}
+#Cluster analysis, make the sum = num 5 and sum = num 1 and plot
+counts_answers[7]= (counts_answers[1]+counts_answers[5])
+counts_answers[8]=counts_answers[2]+counts_answers[3]+counts_answers[4]
+
+no_outliers_counts<-counts_answers[-round(position_outliers_5/91,0),]
+
+names(counts_answers)<-c("times a person answered 1","times a person answered 2","times a person answered 3","times a person answered 4","times a person answered 5","id","1&5","2&3&4","i_e_o","gender","english_native")
+
+c1<-ggplot(counts_answers, aes(x=`times a person answered 1`, y=`times a person answered 5`,col="red")) + geom_point(alpha=.1)+theme_light() + geom_smooth(method = lm,col="orange") + scale_color_manual(values=c("#E98B56"))+ theme(legend.position = "none")  
+
+c2<-ggplot(counts_answers, aes(x=`times a person answered 4`, y=`times a person answered 5`,col="red")) + geom_point(alpha=.1)+theme_light() + geom_smooth(method = lm,col="orange") + scale_color_manual(values=c("#E98B56"))+ theme(legend.position = "none")  
+
+c3<-ggplot(counts_answers, aes(x=`times a person answered 4`, y=`times a person answered 2`,col="red")) + geom_point(alpha=.1)+theme_light() + geom_smooth(method = lm,col="orange") + scale_color_manual(values=c("#E98B56"))+ theme(legend.position = "none")  
+
+c4<-ggplot(counts_answers, aes(x=`times a person answered 3`, y=`times a person answered 4`,col="red")) + geom_point(alpha=.1)+theme_light() + geom_smooth(method = lm,col="orange") + scale_color_manual(values=c("#E98B56"))+ theme(legend.position = "none")  
+
+c5<-ggplot(counts_answers, aes(x=`times a person answered 3`, y=`times a person answered 5`,col="red")) + geom_point(alpha=.1)+theme_light() + geom_smooth(method = lm,col="orange") + scale_color_manual(values=c("#E98B56"))+ theme(legend.position = "none")  
+
+plot_grid(c1,c2,c3,c4,c5)
+```
+
+In the plots above it can be seen how there is an inverse relationship between the extreme people and the undecided people, who choose more gradients and midpoints rather than extremes. Moreover, further analysis yielded as well that there were no significant differences between categorical groups (introverts/extroverts, males/females etc.) at the time of answering, so it's determined by unknown variables.
+
+
+## The Analysis:
+
+Now that the data has been outlined and the main issues resolved, the next step is to look into the answers and what they mean in terms of our research questions, are you an introvert or an extrovert?
+
+### Borrowing from Genetics...
+
+The first analysis way will be to borrow an analytical technique used in genetics to try and identify the most relevant questions in the analysis. As such, it requires considering each question individually and whether is any good at determining whether people are introverts or extroverts. Using logistic regression, consider the following:
+
+$$ \textrm{Odds of being Extroverted}=exp( \beta_0 + \beta_1 \textrm{(Points given to Question }_i\textrm{) } )$$
+The meaning behind this equation suggests that, excluding the baseline level accounted for in $\beta_0$, how much will an extra point of the scale (1-5) awarded to a question, make it more likely that the individual ends up answering they are introverted/extroverted. However, in this first part it's not important the *magnitude of how likely they are to be either*, but rather it's whether the question is meaningful or not. To evaluate this, the *p-value* of the equation is taken, and if they are sufficiently small, then consider $\textrm{(Points given to Question }_i$ as an interesting question to the study, else it will be "useless".
+
+The technique shown below is a Manhattan plot showing the size of the p-values for each question.
+
+```{r dr manhattan, include=FALSE}
+manhattan.plot<-function(chr, pos, pvalue, 
+	sig.level=NA, annotate=NULL, ann.default=list(),
+	should.thin=T, thin.pos.places=2, thin.logp.places=2, 
+	xlab="Different measures", ylab=expression(-log[10](p-value)),
+	col=c("gray","darkgray"), panel.extra=NULL, pch=20, cex=0.8,...) {
+
+	if (length(chr)==0) stop("chromosome vector is empty")
+	if (length(pos)==0) stop("position vector is empty")
+	if (length(pvalue)==0) stop("pvalue vector is empty")
+
+	#make sure we have an ordered factor
+	if(!is.ordered(chr)) {
+		chr <- ordered(chr)
+	} else {
+		chr <- chr[,drop=T]
+	}
+
+	#make sure positions are in kbp
+	if (any(pos>1e6)) pos<-pos/1e6;
+
+	#calculate absolute genomic position
+	#from relative chromosomal positions
+	posmin <- tapply(pos,chr, min);
+	posmax <- tapply(pos,chr, max);
+	posshift <- head(c(0,cumsum(posmax)),-1);
+	names(posshift) <- levels(chr)
+	genpos <- pos + posshift[chr];
+	getGenPos<-function(cchr, cpos) {
+		p<-posshift[as.character(cchr)]+cpos
+		return(p)
+	}
+
+	#parse annotations
+	grp <- NULL
+	ann.settings <- list()
+	label.default<-list(x="peak",y="peak",adj=NULL, pos=3, offset=0.5, 
+		col=NULL, fontface=NULL, fontsize=NULL, show=F)
+	parse.label<-function(rawval, groupname) {
+		r<-list(text=groupname)
+		if(is.logical(rawval)) {
+			if(!rawval) {r$show <- F}
+		} else if (is.character(rawval) || is.expression(rawval)) {
+			if(nchar(rawval)>=1) {
+				r$text <- rawval
+			}
+		} else if (is.list(rawval)) {
+			r <- modifyList(r, rawval)
+		}
+		return(r)
+	}
+
+	if(!is.null(annotate)) {
+		if (is.list(annotate)) {
+			grp <- annotate[[1]]
+		} else {
+			grp <- annotate
+		} 
+		if (!is.factor(grp)) {
+			grp <- factor(grp)
+		}
+	} else {
+		grp <- factor(rep(1, times=length(pvalue)))
+	}
+  
+	ann.settings<-vector("list", length(levels(grp)))
+	ann.settings[[1]]<-list(pch=pch, col=col, cex=cex, fill=col, label=label.default)
+
+	if (length(ann.settings)>1) { 
+		lcols<-trellis.par.get("superpose.symbol")$col 
+		lfills<-trellis.par.get("superpose.symbol")$fill
+		for(i in 2:length(levels(grp))) {
+			ann.settings[[i]]<-list(pch=pch, 
+				col=lcols[(i-2) %% length(lcols) +1 ], 
+				fill=lfills[(i-2) %% length(lfills) +1 ], 
+				cex=cex, label=label.default);
+			ann.settings[[i]]$label$show <- T
+		}
+		names(ann.settings)<-levels(grp)
+	}
+	for(i in 1:length(ann.settings)) {
+		if (i>1) {ann.settings[[i]] <- modifyList(ann.settings[[i]], ann.default)}
+		ann.settings[[i]]$label <- modifyList(ann.settings[[i]]$label, 
+			parse.label(ann.settings[[i]]$label, levels(grp)[i]))
+	}
+	if(is.list(annotate) && length(annotate)>1) {
+		user.cols <- 2:length(annotate)
+		ann.cols <- c()
+		if(!is.null(names(annotate[-1])) && all(names(annotate[-1])!="")) {
+			ann.cols<-match(names(annotate)[-1], names(ann.settings))
+		} else {
+			ann.cols<-user.cols-1
+		}
+		for(i in seq_along(user.cols)) {
+			if(!is.null(annotate[[user.cols[i]]]$label)) {
+				annotate[[user.cols[i]]]$label<-parse.label(annotate[[user.cols[i]]]$label, 
+					levels(grp)[ann.cols[i]])
+			}
+			ann.settings[[ann.cols[i]]]<-modifyList(ann.settings[[ann.cols[i]]], 
+				annotate[[user.cols[i]]])
+		}
+	}
+ 	rm(annotate)
+
+	#reduce number of points plotted
+	if(should.thin) {
+		thinned <- unique(data.frame(
+			logp=round(-log10(pvalue),thin.logp.places), 
+			pos=round(genpos,thin.pos.places), 
+			chr=chr,
+			grp=grp)
+		)
+		logp <- thinned$logp
+		genpos <- thinned$pos
+		chr <- thinned$chr
+		grp <- thinned$grp
+		rm(thinned)
+	} else {
+		logp <- -log10(pvalue)
+	}
+	rm(pos, pvalue)
+	gc()
+
+	#custom axis to print chromosome names
+	axis.chr <- function(side,...) {
+		if(side=="bottom") {
+			panel.axis(side=side, outside=T,
+				at=((posmax+posmin)/2+posshift),
+				labels=levels(chr), 
+				ticks=F, rot=0,
+				check.overlap=F
+			)
+		} else if (side=="top" || side=="right") {
+			panel.axis(side=side, draw.labels=F, ticks=F);
+		}
+		else {
+			axis.default(side=side,...);
+		}
+	 }
+
+	#make sure the y-lim covers the range (plus a bit more to look nice)
+	prepanel.chr<-function(x,y,...) { 
+		A<-list();
+		maxy<-ceiling(max(y, ifelse(!is.na(sig.level), -log10(sig.level), 0)))+3;
+		A$ylim=c(0,maxy);
+		A;
+	}
+
+	xyplot(logp~genpos, chr=chr, groups=grp,
+		axis=axis.chr, ann.settings=ann.settings, 
+		prepanel=prepanel.chr, scales=list(axs="i"),
+		panel=function(x, y, ..., getgenpos) {
+			if(!is.na(sig.level)) {
+				#add significance line (if requested)
+				panel.abline(h=-log10(sig.level), lty=2);
+			}
+			panel.superpose(x, y, ..., getgenpos=getgenpos);
+			if(!is.null(panel.extra)) {
+				panel.extra(x,y, getgenpos, ...)
+			}
+		},
+		panel.groups = function(x,y,..., subscripts, group.number) {
+			A<-list(...)
+			#allow for different annotation settings
+			gs <- ann.settings[[group.number]]
+			A$col.symbol <- gs$col[(as.numeric(chr[subscripts])-1) %% length(gs$col) + 1]    
+			A$cex <- gs$cex[(as.numeric(chr[subscripts])-1) %% length(gs$cex) + 1]
+			A$pch <- gs$pch[(as.numeric(chr[subscripts])-1) %% length(gs$pch) + 1]
+			A$fill <- gs$fill[(as.numeric(chr[subscripts])-1) %% length(gs$fill) + 1]
+			A$x <- x
+			A$y <- y
+			do.call("panel.xyplot", A)
+			#draw labels (if requested)
+			if(gs$label$show) {
+				gt<-gs$label
+				names(gt)[which(names(gt)=="text")]<-"labels"
+				gt$show<-NULL
+				if(is.character(gt$x) | is.character(gt$y)) {
+					peak = which.max(y)/2
+					center = mean(range(x))
+					if (is.character(gt$x)) {
+						if(gt$x=="peak") {gt$x<-x[peak]}
+						if(gt$x=="center") {gt$x<-center}
+					}
+					if (is.character(gt$y)) {
+						if(gt$y=="peak") {gt$y<-y[peak]}
+					}
+				}
+				if(is.list(gt$x)) {
+					gt$x<-A$getgenpos(gt$x[[1]],gt$x[[2]])
+				}
+				do.call("panel.text", gt)
+			}
+		},
+		xlab=xlab, ylab=ylab, 
+		panel.extra=panel.extra, getgenpos=getGenPos, ...
+	);
+}
+
+
+#simulated dataset
+createSampleGwasData<-function(chr.count=10, include.X=F) {
+	chr<-c(); pos<-c()
+	for(i in 1:chr.count) {
+		chr <- c(chr,rep(i, 1000))
+		pos <- c(pos,ceiling(runif(1000)*(chr.count-i+1)*25*1e3))
+	}
+	if(include.X) {
+		chr <- c(chr,rep("X", 1000))
+		pos <- c(pos,ceiling(runif(1000)*5*25*1e3))
+	}
+	pvalue <- runif(length(pos))
+	return(data.frame(chr, pos,pvalue))
+}
+dd<-createSampleGwasData()
+dd$pvalue[3000] <- 1e-7
+```
+
+```{r p values for manh, include=FALSE}
+binomial_response<-response_columns %>% arrange(gender)  %>% filter(IE=="intro" |IE=="extro" )
+
+binomial_response<-binomial_response[-round(position_outliers_5/91,0),]
+
+position=data.frame("position"=(1:length(binomial_response[,1])))
+manh_database=cbind(binomial_response,position)
+
+##function if we were using linear model
+Regressionp <- function (modelobject) {
+   if (class(modelobject) != "glm") stop("Not an object of class 'glm'")
+   f <- summary(modelobject)$fstatistic
+   p <- pf(f[1],f[2],f[3],lower.tail=F)
+   attributes(p) <- NULL
+   return(p)
+}
+
+p_vals=rep(NA,91+2+1+1+(5309-5195)+1)
+dir=rep(NA,91+2+1+1+(5309-5195)+1)
+j=0
+
+for (i in c(1:91,93,94,97)){
+  a=coef(summary(glm(manh_database[,95]~manh_database[,i],family=binomial)))
+  j=j+1
+  dir[j]<-a[2,1]
+  p_vals[j]<- (a[2,4])
+}
+
+```
+
+```{r manhattan finish, echo=FALSE}
+#Leave out the ones from the worst variable?
+p_3<-p_vals[1:94]
+p_2<-c(1:94)
+p_1<-c(rep(0,94))
+
+data_set_manh<-as.data.frame(cbind(p_1,p_2,p_3))
+#create sample data
+
+#make annotation factor
+ann<-rep(1, length(data_set_manh$p_1))
+ann[with(data_set_manh, p_1==1 & p_2>=1 & p_2<92)]<-2
+ann[with(data_set_manh, p_1==1 & p_2>=92 & p_2<94)]<-3
+ann<-factor(ann, levels=1:3, labels=c(""," "," "))
+#draw plot with annotation
+snps<-matrix(NA,1,length(data_set_manh[,1]))
+snps<-data_set_manh[,2]
+allresults_manh<-cbind(snps,data_set_manh)
+snpsOfInterest<-c(92,93,94)
+
+manhattan(allresults_manh, chr="p_1", bp="p_2", snp="snps", p="p_3",highlight = snpsOfInterest)
+```
+
+The results are quite astonishing, in the plot clearly shows the questionnaire is an extremely good predictor when it comes to nailing whether the people responding are or not extroverts/introverts, at least with a highly significant outcome (shall see on the size of the effect later). For instance, in green it can be seen how dummy variables, such as native language, age of the individual or the time they spent on the test, all showing clearly no significant relationship on whether they are or not extro/introverts.
+
+### Magnitude of effects:
+
+Having thus determined it's worth looking at all the questions in the questionnaire, it's time to proceed to compare the size of the effects and which ones are better predictors. In order to get a general idea of the direction in which each questions points (ie whether people are introverts/extroverts) and by how much, a forest plot is used to layout all the effects. The plot below tells you what is the odds of being an extrovert, (ie $1-\textrm{Odds} = \textrm{% chance of being extrovert by every extra point you answered in that question} $. For example, if the odds is 0.5, then you have a -50% chance of being an extrovert for every extra point you selected in that question: or equivalently the higher you scored that question, more likely you are an introvert. Similarly, 1.5 (ie 50% chance) indicates if you scored 5 you are 5x50% more likely to be an extrovert compared to someone who selected 0. (note 0 is impossible but the regression doesn't know that...)
+
+```{r,echo=FALSE,fig.dim = c(3.5, 4)}
+forrest_gum=as.data.frame(matrix(NA,94,4))
+names(forrest_gum)<-c("labeltext","mean","lower","upper")
+j=0
+
+for (i in c(1:91,93:94,97)){
+   j=j+1
+   a=glm(manh_database[,95]~manh_database[,i],family=binomial)
+   forrest_gum[j,1]=colnames(manh_database)[j]
+   forrest_gum[j,2:4]=exp(summ(a, confint = TRUE, ci.width = .5)$coeftable)[2,1:3]
+}
+
+forrest_gum <- forrest_gum %>% mutate(est = sprintf("%.2f", mean), .after = labeltext) %>% arrange(est) #label text is variable and est is mean 2sf
+clrs <- fpColors(box = "royalblue",line = "darkblue", summary = "royalblue")
+
+
+forest_plotting <- function (dataaa,range){
+  data<-dataaa[range,]
+tabletext <- list(c(NA, data %>% pull(labeltext)),
+                  append(list(expression(beta)), data %>%  pull(est)))
+
+data %>% forestplot(labeltext = c(labeltext, est), 
+             boxsize = 0.2,
+             clip = c(-.1, Inf),
+             col = clrs, 
+             grid = structure(c(1), 
+                        gp = gpar(lty = 2, col = "#CCCCFF")), 
+             xlab = "<-Introvert - Extrovert->")
+}
+
+par(mfrow=c(2,2))
+###### 1- 24
+forest_plotting(forrest_gum,c(1:24))
+###### 25- 49
+forest_plotting(forrest_gum,c(25:49))
+
+```
+
+```{r,echo=FALSE,fig.dim = c(3.5, 4)}
+## 74-94
+forest_plotting(forrest_gum,c(50:73))
+## 74-94
+forest_plotting(forrest_gum,c(74:94))
+```
+
+
+Anyhow, the results are extremely satisfying with the output being a great deal of variety, ie some questions leaning extrovert and other introvert, with smaller and greater magnitude of effects.
+
+### Model building exercise
+
+Now that the magnitude has been displayed, it would be too messy to use all questions in order to predict an outcome, multicolinearity comes into play and the results wouldn't be ideal and, as always, the simpler the better. Therefore, filter through the top and bottom questions of those that better predict our outcome. 
+
+First step is to look at how correlated those variables are, as if they show high correlation of outcomes, it's dubious we can use them, and therefore shall choose to include a subset rather than all of them.
+```{r correlation - top bottom, echo=FALSE,fig.dim = c(3.3, 2.75)}
+par(mfrow=c(2,2))
+#Here are the top 10 most introverted determining.
+t_10<-manh_database%>% select(forrest_gum[1:10,1]) 
+introoo<- t_10%>% cor()
+  
+a0<-Heatmap( introoo, name = "correlation",
+         rect_gp = gpar(col="white", lwd=2), column_title = "Predicting introverts"
+         )
+
+#Here are the top 10 most extroverted determining.
+b_10<-manh_database%>% select(forrest_gum[85:94,1])
+extrooo<- b_10%>% cor()
+a1<-Heatmap( extrooo, name = "correlation",
+         rect_gp = gpar(col="white", lwd=2) , column_title = "Predicting extroverts"
+         )
+
+a0
+a1
+
+```
+
+
+```{r,echo=FALSE,fig.dim = c(4.5, 3.5) }
+##both top 10 and bot 10
+par(mfrow=c(1,1))
+top_bot_20<-manh_database%>% select(forrest_gum[85:94,1] | forrest_gum[1:10,1] ) 
+all<- top_bot_20 %>% cor()
+par(mfrow=c(1,1))
+Heatmap( all, name = "correlation",
+         rect_gp = gpar(col="white", lwd=2) , column_title = "Predicting all"
+         )
+```
+
+
+
+The results of the correlation matrix show that while some of the variables are slightly correlation, said issue is only happening in the first plot, only happens between two of the questions (Q5 - Q44), all the rest seem quite correlation free.
+
+Now move into using this information to build our predictive model, first looking into the introvert-deciding questions:
+
+```{r model building - intro, echo=FALSE}
+
+names(manh_database)<-str_replace_all(names(manh_database), "[A]" , "")
+
+manh_database <- manh_database %>% mutate(
+  IE=recode_factor(IE,"intro"=0, "extro"=1 )
+)
+
+t_10_mod<-glm(IE~Q83+Q82+Q81+Q84+Q44+Q85+Q7+Q9+Q6+Q5,family=binomial,data=manh_database)
+
+
+#####remove 83 and 5 (positions 1? and 7)
+t_10_mod_2<-glm(IE~Q83+Q82+Q81+Q84+Q44+Q85+Q7+Q9+Q6,family=binomial,data=manh_database)
+
+effect_1<-exp(summ(t_10_mod_2, confint = TRUE, ci.width = .5)$coeftable[,1:3])-1
+
+cbind("Est in %"=round(effect_1[,1]*100,2),"Lower CI"=round(effect_1[,2]*100,2),"Upper CI"=round(effect_1[,3]*100,2),"p-value"=round(summ(t_10_mod_2, confint = TRUE, ci.width = .5)$coeftable[,5],3)) %>%
+xtable() %>%
+kable()
+
+Chi_t<-1-pchisq(t_10_mod_2$deviance-t_10_mod$deviance,df=t_10_mod_2$df.residual-t_10_mod$df.residual) #Better than previous
+
+#therefore it doesn't improve prediction much more, but is still 5% significant. But if we take into account multicolinearity then we are set
+```
+
+Building the model, one of the variables has been removed (Question 5), as per the previously identified high correlation with other variables. Now doing the same with the variable identifying the extrovert variables:
+
+```{r,echo=FALSE}
+
+b_10_mod<-glm(IE~Q17+Q25+Q13+Q75+Q26+Q89+Q80+Q18+Q90+Q91,family=binomial,data=manh_database)
+
+
+#####remove 91 (position 8)
+b_10_mod_2<-glm(IE~Q17+Q25+Q13+Q75+Q26+Q89+Q80+Q18+Q90+Q91,family=binomial,data=manh_database)
+
+effect_2<-exp(summ(b_10_mod_2, confint = TRUE, ci.width = .5)$coeftable[,1:3])-1
+
+cbind("Est in %"=round(effect_2[,1]*100,2),"Lower CI"=round(effect_2[,2]*100,2),"Upper CI"=round(effect_2[,3]*100,2),"p-value"=round(summ(b_10_mod_2, confint = TRUE, ci.width = .52)$coeftable[,5],3)) %>%
+xtable() %>%
+kable()
+
+```
+This time since the correlation matrix didn't show any issues, the results remain untouched. Thus move to build the final model.
+```{r,echo=FALSE}
+
+b_t_10_mod<-glm(IE~Q17+Q25+Q13+Q75+Q26+Q89+Q80+Q18+Q90+Q91+Q83+Q82+Q81+Q84+Q44+Q85+Q7+Q9+Q6+Q5,family=binomial,data=manh_database)
+
+#so remove the Q75 ( pos bot 4) 
+b_t_10_mod_2<-glm(IE~Q17+Q25+Q13+Q26+Q89+Q80+Q18+Q90+Q91+Q83+Q82+Q81+Q84+Q44+Q7+Q9+Q6,family=binomial,data=manh_database)
+
+
+Chi_t<-1-pchisq(b_t_10_mod_2$deviance-b_t_10_mod$deviance,df=b_t_10_mod_2$df.residual-b_t_10_mod$df.residual) #Better than previous
+
+results_bt<-exp(summ(b_t_10_mod_2, confint = TRUE, ci.width = .5)$coeftable)
+```
+
+When comparing the whole model, it gets more complex, since there will be interactions between the questions and it needs to be checked using other methods, such as comparing which is the AIC criteria (best model decider). As a result, Questions 85, 75 are further dropped, and using a nested model check called a Chi-square test, the results yield that the model including all 20 questions isn't any better than the model with only the 17 identified. The model output can be seen below, with the coefficients being, as discussed above % odds of being extroverted.
+
+```{r,echo=FALSE}
+effect<-exp(summ(b_t_10_mod_2, confint = TRUE, ci.width = .5)$coeftable[,1:3])-1
+cbind("Est in %"=round(effect[,1]*100,2)," Lower CI"=round(effect[,2]*100,2),"Upper CI"=round(effect[,3]*100,2),"p-value"=round(summ(b_t_10_mod_2, confint = TRUE, ci.width = .5)$coeftable[,5],3)) %>%
+xtable() %>%
+kable()
+```
+In the results, therefore we can see Q7 and Q80 being the strongest effect predictors (50.37	towards introvert and 35.88 towards extrovert) respectively. All the rest of the variables also have a significant effect and therefore should definitely be kept in the dataset for exploration. Below is the breakdown of exactly which questions are revealed to be the most influential in our model (note it's in untranformed % ie 0.5 is 50% decrease while 1.5 is 50% increase in odds of being extrovert):
+
+```{r,echo=FALSE}
+results_bt<-exp(summ(b_t_10_mod_2, confint = TRUE, ci.width = .5)$coeftable)
+?sort
+results_bt<- as.data.frame(results_bt) %>% arrange(Est.) %>% rownames_to_column(var = "labeltext")
+results_bt<-results_bt[1:4]
+names(results_bt)<-c("labeltext","mean","lower","upper")
+forrest_gum_final <- results_bt %>% mutate( est = sprintf("%.3f", mean), .after = labeltext) %>% arrange(est) 
+
+
+##### Change the questions so are well matched and ur done
+main_frame <- 
+  structure(list(
+    mean  = forrest_gum_final[2:18,3], 
+    lower = forrest_gum_final[2:18,4],
+    upper = forrest_gum_final[2:18,5],
+    type = c(rep("introvert",8),rep("extrovert",9)),
+    Analysis=forrest_gum_final[2:18,1],
+    Questions=c("I spend hours alone with my hobbies.",
+                "I don't talk a lot.",
+                "I keep in the background.",
+                "I am quiet around strangers.",
+                "I mostly listen to people in conversations.",
+                "I have trouble finding people I want to be friends with.",
+                "I reveal little about myself.",
+                "I don't like to draw attention to myself.",
+                "I can keep a conversation going with anyone about anything.",
+                "I am a bundle of joy.",
+                "I don't mind being the center of attention.",
+                "I have a strong personality.",
+                "I am excited by many different activities.",
+                "I talk to a lot of different people at parties.",
+                "I start conversations.",
+                "I love excitement.",
+                "I love large parties.")),
+  .Names = c("Difference", "lower", "upper", "type", "Analysis","Questions"), 
+    row.names = c(NA, -17L), 
+    class = "data.frame")
+```
+
+```{r,echo=FALSE, fig.dim = c(6, 7), fig.keep='all',warning=FALSE}
+# and make a graph with ggplot
+
+pp_1 <- ggplot(data=main_frame[1:8,],
+       aes(x = type,y = Difference, ymin = lower, ymax = upper ))+
+  geom_pointrange(aes(col=type))+
+  
+  geom_hline(aes(fill=type),yintercept =1, linetype=2)+
+  
+  xlab('Questions')+ ylab("Odds ratio of person being extrovert for every extra point in survey")+
+  geom_errorbar(aes(ymin=lower, ymax=upper,col=type),width=0.5,cex=1)+
+    theme_light()+
+  facet_wrap(~Analysis,strip.position="left",nrow=17,scales = "free_y") +
+  scale_color_manual(values=c("#56B4E9"))+
+  theme(plot.title=element_text(size=16,face="bold"),
+    axis.text.y=element_blank(),
+    axis.ticks.y=element_blank(),
+    axis.text.x=element_text(face="bold"),
+    axis.title=element_text(size=12,face="bold"),
+    strip.text.y = element_text(hjust=.5,vjust = 2,angle=180,face="bold",size=8))+
+  coord_flip()+
+  ylim(-0, 1.2) +
+  geom_text( mapping = aes(x = -Inf, y = -Inf, label = Questions),
+  hjust   = -.05,
+  vjust   = -2.4,
+  size=2.5
+)
+
+# and finally add the text labels (modify it to get the labels you want) 
+pp_2 <- ggplot(data=main_frame[9:17,],
+       aes(x = type,y = Difference, ymin = lower, ymax = upper ))+
+  geom_pointrange(aes(col=type))+
+  
+  geom_hline(aes(fill=type),yintercept =1, linetype=2)+
+  
+  xlab('Questions')+ ylab("Odds ratio of person being extrovert for every extra point in survey")+
+  
+  geom_errorbar(aes(ymin=lower, ymax=upper,col=type),width=0.5,cex=1)+
+  
+  theme_light()+
+  
+  facet_wrap(~Analysis,strip.position="left",nrow=17,scales = "free_y") +
+  scale_color_manual(values=c("#E98B56"))+  #interesting flasshy colour
+  theme(plot.title=element_text(size=16,face="bold"),
+    axis.text.y=element_blank(),
+    axis.ticks.y=element_blank(),
+    axis.text.x=element_text(face="bold"),
+    axis.title=element_text(size=12,face="bold"),
+    strip.text.y = element_text(hjust=.5,vjust = 2,angle=180,face="bold",size=8))+
+  coord_flip()+
+  ylim(-0, 1.8) +
+geom_text( aes(x = -Inf, y = -Inf,label = Questions),
+  hjust   = -.1,
+  vjust   = -2.4,
+  size=2.5
+)
+
+p_combined<-pp_1 / pp_2 +plot_layout(guides = "collect")
+p_combined
+```
+
+## Final model checks and play:
+
+Finally, all that's left is cross validate the results and see what percentage of our sample is well predicted using these calculations. In order to do this, first it's going to estimate what percentage of the sample is well fit using the fixed parameters estimated. After this has been calculated, the more flexible cross validation method will be used, iterating through 1/10 of the dataset and estimating the model using the remaining 9/10, thus seeing whether it would be a good model to estimate foreign data with.
+
+```{r,include=FALSE}
+cost.misc <- function(response, pred) mean(abs(response-pred) > 0.5)
+
+
+# %  people which correctly predicted?
+1-cost.misc(as.numeric(manh_database$IE)-1,fitted(b_t_10_mod_2))
+
+#93% of all results are well qualified
+
+validation<-manh_database[,c("Q17","Q25","Q13","Q26","Q89","Q80","Q18","Q90","Q91","Q83","Q82","Q81","Q84","Q44","Q7","Q9","Q6","IE")]
+
+```
+
+```{r}
+cost.misc <- function(response, pred) mean(abs(response-pred) > 0.5)
+cv.err1 <- cv.glm(manh_database, b_t_10_mod_2, cost.misc,K=10)$delta[1]#
+
+cv.err3<- cv.glm(manh_database, b_t_10_mod_2, cost.misc,K=500)$delta[1]
+
+# %  people which correctly predicted?
+1-cost.misc(as.numeric(manh_database$IE)-1,fitted(b_t_10_mod_2))
+
+
+
+#%  people which correctly predicted?
+1-cv.err1
+
+1-cv.err3
+```
+
+
+The results of doing this validation, yield that the validity of our data is 93%, meaning that it's possible to predict accurately 93% of the people who enter the questionnaire. Equally, using the more advanced validation method also yields a similar result, which could be a feature of the dataset as it's relatively uniform. In the output above, the first is the one using the fixed results, and the second are using a partition of 10 and 500 parts of the dataset respectively.
+
+### And now prediction:
+Finally, we will try to predict the outcome of those who identify as neither extroverts or introverts: Using the formula, and the code below, the final conclusion can be taken that 37% of those in the "neither" category are actually introverts and the rest are extroverts, at least using our predictive model.
+
+```{r,include=FALSE}
+#Select those who are in the neither category
+magician<-inex_1 %>% filter(IE=="neither")
+relevant_info_mg <-  magician %>% select(gender,age,engnat,IE,country,testelapse)
+response_columns_magic<- cbind(magician %>% select(grep("A", names(magician)) & grep("Q", names(magician))),relevant_info_mg)
+names(response_columns_magic)<-str_replace_all(names(response_columns_magic), "[A]" , "")
+validation_magic<-response_columns_magic[,c("Q17","Q25","Q13","Q26","Q89","Q80","Q18",
+                                            "Q90","Q91","Q83","Q82","Q81","Q84","Q44","Q7","Q9","Q6","IE")]
+
+
+
+```
+
+```{r,echo=FALSE}
+#loop through to apply the model to all variables
+a=0
+for (i in 2:17){
+a=a+b_t_10_mod_2$coefficients[i]*validation_magic[,i]
+}
+b=0
+#Since we have the odds, we need to convert into probability to be introvert/extrovert.
+MSE=rep(NA,length(a))
+for (j in 1:length(a))
+   MSE[j]=exp(a[j])/(1+exp(a[j]))
+if (exp(a[j])/(1+exp(a[j]))<0.5){
+  b=b+1 
+}
+```
+
+```{r}
+#Proportion of introverts:
+b/length(a)
+```
+
+
+
